@@ -7,9 +7,9 @@
 Главный админ задаётся переменными окружения ADMIN_USERNAME / ADMIN_PASSWORD.
 Из панели можно выдавать дополнительные логины/пароли другим людям.
 
-Панель умеет не только показывать настройки, но и реально добавлять
-группы/личные чаты — так же, как команды в Telegram, через тот же
-запущенный Telethon-клиент (безопасный вызов из другого потока).
+"Вес" фразы (число в phrases_store.py) здесь показывается и вводится как
+проценты — по сути это то же самое число, просто рядом сразу считается
+и показывается итоговая реальная вероятность в %, чтобы было нагляднее.
 """
 
 import asyncio
@@ -37,8 +37,6 @@ _loop = None
 
 
 def set_client(client, loop):
-    """Вызывается из userbot.py после запуска, чтобы панель могла
-    безопасно обращаться к тому же Telethon-клиенту из другого потока."""
     global _client, _loop
     _client = client
     _loop = loop
@@ -77,26 +75,106 @@ def login_required(f):
     return wrapper
 
 
+def _flash_redirect(endpoint, message, is_error=False):
+    session["_flash"] = message
+    session["_flash_err"] = is_error
+    return redirect(url_for(endpoint))
+
+
+def _pop_flash():
+    return session.pop("_flash", None), session.pop("_flash_err", False)
+
+
+# =========================================================
+#                     ОБЩИЙ ДИЗАЙН
+# =========================================================
+
 BASE_STYLE = """
 <style>
-body{font-family:system-ui,sans-serif;background:#0f1117;color:#eee;margin:0;padding:16px 12px 60px}
-h1{font-size:20px}
-h2{font-size:16px;margin-top:28px;border-bottom:1px solid #2a2d38;padding-bottom:6px}
-.card{background:#1a1d27;border-radius:10px;padding:14px;margin:10px 0}
-input,select{padding:8px;border-radius:6px;border:1px solid #333;background:#0f1117;color:#eee;box-sizing:border-box}
-input[type=text],input[type=password]{width:100%;margin-bottom:8px}
-button{padding:8px 14px;border-radius:6px;border:none;background:#5b8def;color:#fff;font-weight:600;cursor:pointer;margin-top:6px}
-button.danger{background:#e5534b}
-.row{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
-.top{display:flex;justify-content:space-between;align-items:center}
-a.logout{color:#aaa;font-size:13px;text-decoration:none}
-small{color:#888}
-form.inline{display:inline}
-.msg{background:#20361f;color:#8fd67f;padding:8px 12px;border-radius:8px;margin-bottom:10px;font-size:14px}
-.msg.err{background:#3a1d1d;color:#ff8f8f}
-.pill{background:#2a2d38;padding:2px 8px;border-radius:12px;font-size:12px}
+:root{
+  --bg:#0b0d12; --card:#151822; --card2:#1b1f2b; --border:#262b3a;
+  --text:#eef0f5; --muted:#8b93a7; --accent:#6c8cff; --accent2:#4f6fe0;
+  --green:#3ecf8e; --red:#ef5b5b; --yellow:#e0b04f;
+}
+*{box-sizing:border-box}
+body{font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);margin:0;padding-bottom:60px}
+a{color:var(--accent);text-decoration:none}
+.topbar{position:sticky;top:0;background:rgba(11,13,18,0.95);backdrop-filter:blur(6px);padding:14px 16px 0;z-index:10;border-bottom:1px solid var(--border)}
+.topbar h1{font-size:18px;margin:0 0 12px;display:flex;justify-content:space-between;align-items:center}
+.topbar h1 span.logout{font-size:12px;color:var(--muted);font-weight:400}
+.nav{display:flex;gap:4px;overflow-x:auto;padding-bottom:10px;-webkit-overflow-scrolling:touch}
+.nav a{white-space:nowrap;padding:8px 14px;border-radius:20px;font-size:13px;color:var(--muted);background:var(--card)}
+.nav a.active{color:#fff;background:var(--accent2);font-weight:600}
+.content{padding:16px}
+h2.section{font-size:15px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:22px 0 10px;font-weight:600}
+h2.section:first-child{margin-top:0}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px 16px;margin-bottom:10px}
+.card.dim{opacity:.7}
+input[type=text],input[type=password],input[type=number],select{
+  padding:9px 10px;border-radius:8px;border:1px solid var(--border);
+  background:var(--card2);color:var(--text);box-sizing:border-box;font-size:14px}
+input[type=text]:focus,input[type=number]:focus{outline:none;border-color:var(--accent)}
+button{padding:9px 16px;border-radius:8px;border:none;background:var(--accent2);
+  color:#fff;font-weight:600;cursor:pointer;font-size:13px}
+button.danger{background:transparent;color:var(--red);border:1px solid var(--red)}
+button.ghost{background:transparent;color:var(--accent);border:1px solid var(--border)}
+button.small{padding:6px 10px;font-size:12px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.stack{display:flex;flex-direction:column;gap:8px}
+.pill{background:var(--card2);padding:3px 10px;border-radius:20px;font-size:12px;color:var(--muted)}
+.pill.on{color:var(--green)}
+.pill.off{color:var(--red)}
+.muted{color:var(--muted);font-size:13px}
+form.inline{display:inline-flex;align-items:center;gap:6px}
+.msg{padding:10px 14px;border-radius:10px;margin-bottom:14px;font-size:14px;background:#173328;color:var(--green);border:1px solid #235b41}
+.msg.err{background:#3a1d1f;color:var(--red);border-color:#6b2a2a}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.bar-outer{height:6px;border-radius:4px;background:var(--card2);overflow:hidden;margin-top:6px}
+.bar-inner{height:100%;background:var(--accent)}
+label.toggle{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px}
+.empty{color:var(--muted);font-size:13px;padding:6px 0}
 </style>
 """
+
+
+def render_page(active, content_html, message=None, is_error=False):
+    tabs = [
+        ("dashboard", "⚙️ Обзор"),
+        ("groups_page", "📋 Группы"),
+        ("dms_page", "👤 Личные чаты"),
+        ("phrases_page", "💬 Фразы"),
+        ("users_page", "🔑 Доступ"),
+    ]
+    nav_html = "".join(
+        f'<a href="{url_for(ep)}" class="{"active" if ep == active else ""}">{label}</a>'
+        for ep, label in tabs
+    )
+    msg_html = ""
+    if message:
+        msg_html = f'<div class="msg {"err" if is_error else ""}">{message}</div>'
+
+    page = """
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Панель юзербота</title>
+""" + BASE_STYLE + """
+</head><body>
+<div class="topbar">
+  <h1>🤖 Панель юзербота <span class="logout"><a href="/logout">Выйти ({{ user }})</a></span></h1>
+  <div class="nav">""" + nav_html + """</div>
+</div>
+<div class="content">
+""" + msg_html + content_html + """
+</div>
+</body></html>
+"""
+    return render_template_string(page, user=session.get("username", ""))
+
+
+# =========================================================
+#                        ВХОД
+# =========================================================
 
 LOGIN_PAGE = """
 <!doctype html>
@@ -105,13 +183,13 @@ LOGIN_PAGE = """
 <title>Вход — панель юзербота</title>
 """ + BASE_STYLE + """
 </head><body style="display:flex;height:100vh;align-items:center;justify-content:center">
-<div class="card" style="width:280px">
-<h2>🔐 Вход в панель</h2>
-{% if error %}<p class="msg err">{{ error }}</p>{% endif %}
-<form method="post">
+<div class="card" style="width:300px">
+<h2 style="margin-top:0">🔐 Вход в панель</h2>
+{% if error %}<div class="msg err">{{ error }}</div>{% endif %}
+<form method="post" class="stack">
 <input type="text" name="username" placeholder="Логин" autofocus>
 <input type="password" name="password" placeholder="Пароль">
-<button type="submit" style="width:100%">Войти</button>
+<button type="submit">Войти</button>
 </form>
 </div></body></html>
 """
@@ -142,196 +220,73 @@ def logout():
     return redirect(url_for("login"))
 
 
-DASHBOARD_PAGE = """
-<!doctype html>
-<html lang="ru"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Панель юзербота</title>
-""" + BASE_STYLE + """
-</head><body>
-
-<div class="top"><h1>🤖 Панель юзербота</h1><a class="logout" href="/logout">Выйти ({{ current_user }})</a></div>
-
-{% if message %}<p class="msg {{ 'err' if is_error else '' }}">{{ message }}</p>{% endif %}
-
-<h2>⚙️ Общее</h2>
-<div class="card">
-  <div class="row">
-    <span>Бот: <b>{{ 'включён ✅' if enabled else 'выключен ⛔' }}</b></span>
-    <form method="post" action="/settings/toggle">
-      <button type="submit">{{ 'Выключить' if enabled else 'Включить' }}</button>
-    </form>
-  </div>
-  <div class="row" style="margin-top:10px">
-    <span>Режим:</span>
-    <form method="post" action="/settings/mode">
-      <select name="mode" onchange="this.form.submit()">
-        <option value="autocomment" {{ 'selected' if mode == 'autocomment' else '' }}>Комментировать посты канала</option>
-        <option value="chat" {{ 'selected' if mode == 'chat' else '' }}>Отвечать на сообщения людей</option>
-      </select>
-    </form>
-  </div>
-  <div class="row" style="margin-top:10px">
-    <span>Интервал комментариев (раз в N постов):</span>
-    <form method="post" action="/settings/interval" class="inline">
-      <input type="number" name="value" value="{{ interval }}" min="1" style="width:70px">
-      <button type="submit">Сохранить</button>
-    </form>
-  </div>
-  <div class="row" style="margin-top:10px">
-    <span>Интервал чат-режима (раз в N сообщений людей):</span>
-    <form method="post" action="/settings/chatinterval" class="inline">
-      <input type="number" name="value" value="{{ chat_interval }}" min="1" style="width:70px">
-      <button type="submit">Сохранить</button>
-    </form>
-  </div>
-</div>
-
-<h2>📋 Группы (посты/сообщения)</h2>
-{% for gid, g in groups.items() %}
-<div class="card">
-  <div class="row">
-    <b>@{{ g.username }}</b>
-    <form method="post" action="/groups/remove" onsubmit="return confirm('Отключить @{{ g.username }}?')">
-      <input type="hidden" name="chat_id" value="{{ gid }}">
-      <button class="danger" type="submit">Отключить</button>
-    </form>
-  </div>
-</div>
-{% else %}
-<p><small>Групп пока не подключено.</small></p>
-{% endfor %}
-
-<div class="card">
-  <form method="post" action="/groups/add">
-    <input type="text" name="username" placeholder="@username_группы" required>
-    <button type="submit">➕ Подключить группу</button>
-  </form>
-  <small>Группа должна быть публичной, а бот — уже состоять в ней как администратор.</small>
-</div>
-
-<h2>👤 Личные чаты (авто-ответчик)</h2>
-<div class="card">
-  <div class="row">
-    <span>Авто-ответы в личке: <b>{{ 'включены ✅' if dm_enabled else 'выключены ⛔' }}</b></span>
-    <form method="post" action="/dm/toggle">
-      <button type="submit">{{ 'Выключить' if dm_enabled else 'Включить' }}</button>
-    </form>
-  </div>
-  <div class="row" style="margin-top:10px">
-    <span>Отвечать раз в N сообщений:</span>
-    <form method="post" action="/dm/interval" class="inline">
-      <input type="number" name="value" value="{{ dm_interval }}" min="1" style="width:70px">
-      <button type="submit">Сохранить</button>
-    </form>
-  </div>
-</div>
-
-{% for cid, d in dm_list.items() %}
-<div class="card">
-  <div class="row">
-    <span>{{ d.label }}</span>
-    <form method="post" action="/dm/remove" onsubmit="return confirm('Отключить {{ d.label }}?')">
-      <input type="hidden" name="chat_id" value="{{ cid }}">
-      <button class="danger" type="submit">Отключить</button>
-    </form>
-  </div>
-</div>
-{% else %}
-<p><small>Личных чатов пока не подключено.</small></p>
-{% endfor %}
-
-<div class="card">
-  <form method="post" action="/dm/add">
-    <input type="text" name="target" placeholder="@username или ID пользователя" required>
-    <button type="submit">➕ Подключить личный чат</button>
-  </form>
-</div>
-
-<h2>💬 Фразы</h2>
-{% for p in phrase_list %}
-<div class="card">
-  <div class="row">
-    <form class="inline" method="post" action="/phrases/settext" style="flex:1">
-      <input type="hidden" name="index" value="{{ loop.index }}">
-      <input type="text" name="text" value="{{ p.text }}" style="width:55%">
-      <span class="pill">вес {{ p.weight }}</span>
-      <button type="submit">Сохранить</button>
-    </form>
-  </div>
-  <div class="row" style="margin-top:6px">
-    <form class="inline" method="post" action="/phrases/toggle">
-      <input type="hidden" name="index" value="{{ loop.index }}">
-      <input type="hidden" name="enabled" value="{{ 'false' if p.enabled else 'true' }}">
-      <button type="submit">{{ '✅ Вкл' if p.enabled else '⛔ Выкл' }}</button>
-    </form>
-    <form class="inline" method="post" action="/phrases/setweight">
-      <input type="hidden" name="index" value="{{ loop.index }}">
-      <input type="number" name="weight" value="{{ p.weight }}" min="0" style="width:60px">
-      <button type="submit">Вес</button>
-    </form>
-  </div>
-</div>
-{% endfor %}
-
-<h2>🔑 Доступ к панели (логины/пароли)</h2>
-<div class="card">
-  <p><small>Главный админ задан в переменных окружения и не отображается здесь.</small></p>
-  {% for u in extra_users %}
-  <div class="row">
-    <span>{{ u }}</span>
-    <form method="post" action="/users/remove" onsubmit="return confirm('Удалить доступ у {{ u }}?')">
-      <input type="hidden" name="username" value="{{ u }}">
-      <button class="danger" type="submit">Удалить</button>
-    </form>
-  </div>
-  {% else %}
-  <p><small>Дополнительных пользователей пока нет.</small></p>
-  {% endfor %}
-</div>
-<div class="card">
-  <form method="post" action="/users/add">
-    <input type="text" name="username" placeholder="Новый логин" required>
-    <input type="text" name="password" placeholder="Пароль для него" required>
-    <button type="submit">➕ Выдать доступ</button>
-  </form>
-</div>
-
-</body></html>
-"""
-
-
-def _flash_redirect(message, is_error=False):
-    session["_flash"] = message
-    session["_flash_err"] = is_error
-    return redirect(url_for("dashboard"))
-
+# =========================================================
+#                  ВКЛАДКА: ОБЗОР
+# =========================================================
 
 @app.route("/", methods=["GET"])
 @app.route("/dashboard", methods=["GET"])
 @login_required
 def dashboard():
-    message = session.pop("_flash", None)
-    is_error = session.pop("_flash_err", False)
-    return render_template_string(
-        DASHBOARD_PAGE,
-        current_user=session.get("username"),
-        message=message,
-        is_error=is_error,
-        enabled=settings.is_enabled(),
-        mode=settings.get_mode(),
-        interval=settings.get_interval(),
-        chat_interval=settings.get_chat_interval(),
-        groups=groups.list_groups(),
-        dm_enabled=settings.is_dm_enabled(),
-        dm_interval=settings.get_dm_interval(),
-        dm_list=dms.list_dms(),
-        phrase_list=phrases.list_phrases(),
-        extra_users=auth.list_users(),
-    )
+    message, is_error = _pop_flash()
 
+    enabled = settings.is_enabled()
+    mode = settings.get_mode()
+    mode_label = "Комментировать посты канала" if mode == settings.MODE_AUTOCOMMENT else "Отвечать на сообщения людей"
 
-# ---------- Общие настройки ----------
+    content = f"""
+<h2 class="section">Статус</h2>
+<div class="card">
+  <div class="row">
+    <span class="pill {'on' if enabled else 'off'}">{'● Бот включён' if enabled else '● Бот выключен'}</span>
+    <form method="post" action="{url_for('settings_toggle')}">
+      <button type="submit" class="{'danger' if enabled else ''}">{'Выключить' if enabled else 'Включить'}</button>
+    </form>
+  </div>
+</div>
+
+<h2 class="section">Режим работы</h2>
+<div class="card">
+  <div class="stack">
+    <span class="muted">Сейчас: <b>{mode_label}</b></span>
+    <form method="post" action="{url_for('settings_mode')}" class="row">
+      <select name="mode" style="flex:1">
+        <option value="autocomment" {"selected" if mode == "autocomment" else ""}>Комментировать посты канала</option>
+        <option value="chat" {"selected" if mode == "chat" else ""}>Отвечать на сообщения людей</option>
+      </select>
+      <button type="submit">Сохранить</button>
+    </form>
+  </div>
+</div>
+
+<h2 class="section">Интервалы</h2>
+<div class="card">
+  <div class="row" style="margin-bottom:10px">
+    <span class="muted">Комментарии: раз в N постов канала</span>
+    <form method="post" action="{url_for('settings_interval')}" class="inline">
+      <input type="number" name="value" value="{settings.get_interval()}" min="1" style="width:70px">
+      <button type="submit" class="small">Сохранить</button>
+    </form>
+  </div>
+  <div class="row">
+    <span class="muted">Чат-режим: раз в N сообщений людей</span>
+    <form method="post" action="{url_for('settings_chatinterval')}" class="inline">
+      <input type="number" name="value" value="{settings.get_chat_interval()}" min="1" style="width:70px">
+      <button type="submit" class="small">Сохранить</button>
+    </form>
+  </div>
+</div>
+
+<h2 class="section">Краткая сводка</h2>
+<div class="card grid2">
+  <div><span class="muted">Групп подключено</span><br><b>{len(groups.list_groups())}</b></div>
+  <div><span class="muted">Личных чатов</span><br><b>{len(dms.list_dms())}</b></div>
+  <div><span class="muted">Фраз включено</span><br><b>{len(phrases.get_enabled_texts())}</b></div>
+  <div><span class="muted">Автоответ в личке</span><br><b>{'включён' if settings.is_dm_enabled() else 'выключен'}</b></div>
+</div>
+"""
+    return render_page("dashboard", content, message, is_error)
+
 
 @app.route("/settings/toggle", methods=["POST"])
 @login_required
@@ -367,7 +322,9 @@ def settings_chatinterval():
     return redirect(url_for("dashboard"))
 
 
-# ---------- Группы ----------
+# =========================================================
+#                  ВКЛАДКА: ГРУППЫ
+# =========================================================
 
 async def _add_group_coro(username):
     entity = await _client.get_entity(username)
@@ -377,17 +334,55 @@ async def _add_group_coro(username):
     groups.add_group(utils.get_peer_id(entity), username)
 
 
+@app.route("/groups", methods=["GET"])
+@login_required
+def groups_page():
+    message, is_error = _pop_flash()
+    data = groups.list_groups()
+
+    cards = ""
+    for gid, g in data.items():
+        cards += f"""
+<div class="card">
+  <div class="row">
+    <b>@{g['username']}</b>
+    <form method="post" action="{url_for('groups_remove')}" onsubmit="return confirm('Отключить @{g['username']}?')">
+      <input type="hidden" name="chat_id" value="{gid}">
+      <button class="danger small" type="submit">Отключить</button>
+    </form>
+  </div>
+</div>
+"""
+    if not data:
+        cards = '<div class="empty">Групп пока не подключено.</div>'
+
+    content = f"""
+<h2 class="section">Подключённые группы ({len(data)})</h2>
+{cards}
+
+<h2 class="section">Подключить новую</h2>
+<div class="card">
+  <form method="post" action="{url_for('groups_add')}" class="stack">
+    <input type="text" name="username" placeholder="@username_группы" required>
+    <button type="submit">➕ Подключить группу</button>
+  </form>
+  <p class="muted" style="margin-bottom:0">Группа должна быть публичной, а бот — уже состоять в ней как администратор.</p>
+</div>
+"""
+    return render_page("groups_page", content, message, is_error)
+
+
 @app.route("/groups/add", methods=["POST"])
 @login_required
 def groups_add():
     username = normalize_username(request.form.get("username", ""))
     if not username:
-        return _flash_redirect("Укажите юзернейм группы.", True)
+        return _flash_redirect("groups_page", "Укажите юзернейм группы.", True)
     try:
         run_async(_add_group_coro(username))
-        return _flash_redirect(f"Группа @{username} подключена.")
+        return _flash_redirect("groups_page", f"Группа @{username} подключена.")
     except Exception as e:
-        return _flash_redirect(f"Не удалось подключить @{username}: {e}", True)
+        return _flash_redirect("groups_page", f"Не удалось подключить @{username}: {e}", True)
 
 
 @app.route("/groups/remove", methods=["POST"])
@@ -395,10 +390,12 @@ def groups_add():
 def groups_remove():
     chat_id = request.form.get("chat_id")
     groups.remove_group_by_chat_id(chat_id)
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("groups_page"))
 
 
-# ---------- Личные чаты ----------
+# =========================================================
+#               ВКЛАДКА: ЛИЧНЫЕ ЧАТЫ
+# =========================================================
 
 async def _add_dm_coro(raw):
     if raw.lstrip('-').isdigit():
@@ -413,17 +410,73 @@ async def _add_dm_coro(raw):
     return label
 
 
+@app.route("/dms", methods=["GET"])
+@login_required
+def dms_page():
+    message, is_error = _pop_flash()
+    dm_enabled = settings.is_dm_enabled()
+    dm_interval = settings.get_dm_interval()
+    data = dms.list_dms()
+
+    cards = ""
+    for cid, d in data.items():
+        cards += f"""
+<div class="card">
+  <div class="row">
+    <span>{d['label']}</span>
+    <form method="post" action="{url_for('dm_remove')}" onsubmit="return confirm('Отключить {d['label']}?')">
+      <input type="hidden" name="chat_id" value="{cid}">
+      <button class="danger small" type="submit">Отключить</button>
+    </form>
+  </div>
+</div>
+"""
+    if not data:
+        cards = '<div class="empty">Личных чатов пока не подключено.</div>'
+
+    content = f"""
+<h2 class="section">Авто-ответчик</h2>
+<div class="card">
+  <div class="row" style="margin-bottom:10px">
+    <span class="pill {'on' if dm_enabled else 'off'}">{'● Включён' if dm_enabled else '● Выключен'}</span>
+    <form method="post" action="{url_for('dm_toggle')}">
+      <button type="submit" class="{'danger' if dm_enabled else ''}">{'Выключить' if dm_enabled else 'Включить'}</button>
+    </form>
+  </div>
+  <div class="row">
+    <span class="muted">Отвечать раз в N сообщений</span>
+    <form method="post" action="{url_for('dm_interval')}" class="inline">
+      <input type="number" name="value" value="{dm_interval}" min="1" style="width:70px">
+      <button type="submit" class="small">Сохранить</button>
+    </form>
+  </div>
+</div>
+
+<h2 class="section">Подключённые чаты ({len(data)})</h2>
+{cards}
+
+<h2 class="section">Подключить новый</h2>
+<div class="card">
+  <form method="post" action="{url_for('dm_add')}" class="stack">
+    <input type="text" name="target" placeholder="@username или ID пользователя" required>
+    <button type="submit">➕ Подключить личный чат</button>
+  </form>
+</div>
+"""
+    return render_page("dms_page", content, message, is_error)
+
+
 @app.route("/dm/add", methods=["POST"])
 @login_required
 def dm_add():
     target = request.form.get("target", "").strip()
     if not target:
-        return _flash_redirect("Укажите @username или ID.", True)
+        return _flash_redirect("dms_page", "Укажите @username или ID.", True)
     try:
         label = run_async(_add_dm_coro(target))
-        return _flash_redirect(f"Личный чат «{label}» подключён.")
+        return _flash_redirect("dms_page", f"Личный чат «{label}» подключён.")
     except Exception as e:
-        return _flash_redirect(f"Не удалось подключить «{target}»: {e}", True)
+        return _flash_redirect("dms_page", f"Не удалось подключить «{target}»: {e}", True)
 
 
 @app.route("/dm/remove", methods=["POST"])
@@ -431,14 +484,14 @@ def dm_add():
 def dm_remove():
     chat_id = request.form.get("chat_id")
     dms.remove_dm_by_chat_id(chat_id)
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("dms_page"))
 
 
 @app.route("/dm/toggle", methods=["POST"])
 @login_required
 def dm_toggle():
     settings.set_dm_enabled(not settings.is_dm_enabled())
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("dms_page"))
 
 
 @app.route("/dm/interval", methods=["POST"])
@@ -448,10 +501,58 @@ def dm_interval():
         settings.set_dm_interval(int(request.form.get("value", 1)))
     except ValueError:
         pass
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("dms_page"))
 
 
-# ---------- Фразы ----------
+# =========================================================
+#                  ВКЛАДКА: ФРАЗЫ
+# =========================================================
+
+@app.route("/phrases", methods=["GET"])
+@login_required
+def phrases_page():
+    message, is_error = _pop_flash()
+    data = phrases.list_phrases()
+
+    total_weight = sum(p.get("weight", 1) for p in data if p.get("enabled")) or 1
+
+    cards = ""
+    for i, p in enumerate(data, start=1):
+        enabled = p.get("enabled", True)
+        weight = p.get("weight", 1)
+        percent = (weight / total_weight * 100) if enabled else 0
+
+        cards += f"""
+<div class="card {'' if enabled else 'dim'}">
+  <form method="post" action="{url_for('phrases_settext')}" class="row" style="margin-bottom:8px">
+    <input type="hidden" name="index" value="{i}">
+    <input type="text" name="text" value="{p['text']}" style="flex:1">
+    <button type="submit" class="small">Сохранить</button>
+  </form>
+  <div class="row">
+    <form method="post" action="{url_for('phrases_toggle')}">
+      <input type="hidden" name="index" value="{i}">
+      <input type="hidden" name="enabled" value="{'false' if enabled else 'true'}">
+      <button type="submit" class="small {'ghost' if enabled else ''}">{'✅ Включена' if enabled else '⛔ Выключена'}</button>
+    </form>
+    <form method="post" action="{url_for('phrases_setweight')}" class="inline">
+      <input type="number" name="weight" value="{weight}" min="0" style="width:60px">
+      <span class="muted">%</span>
+      <button type="submit" class="small">Сохранить</button>
+    </form>
+  </div>
+  <div class="bar-outer"><div class="bar-inner" style="width:{percent:.1f}%"></div></div>
+  <div class="muted" style="margin-top:4px">{'~' + format(percent, '.1f') + '% шанс выпадения' if enabled else 'не участвует в выборе'}</div>
+</div>
+"""
+
+    content = f"""
+<h2 class="section">Фразы для авто-ответов ({len(data)})</h2>
+<p class="muted">Число «%» — это относительный шанс, что бот выберет именно эту фразу среди включённых. Не обязательно, чтобы сумма была ровно 100 — соотношение чисел друг с другом важнее абсолютных значений.</p>
+{cards}
+"""
+    return render_page("phrases_page", content, message, is_error)
+
 
 @app.route("/phrases/settext", methods=["POST"])
 @login_required
@@ -460,7 +561,7 @@ def phrases_settext():
     text = request.form.get("text", "").strip()
     if text:
         phrases.set_phrase(index, text)
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("phrases_page"))
 
 
 @app.route("/phrases/toggle", methods=["POST"])
@@ -469,7 +570,7 @@ def phrases_toggle():
     index = int(request.form.get("index"))
     enabled = request.form.get("enabled") == "true"
     phrases.set_enabled(index, enabled)
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("phrases_page"))
 
 
 @app.route("/phrases/setweight", methods=["POST"])
@@ -481,10 +582,51 @@ def phrases_setweight():
     except ValueError:
         weight = 1
     phrases.set_weight(index, weight)
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("phrases_page"))
 
 
-# ---------- Пользователи панели ----------
+# =========================================================
+#              ВКЛАДКА: ДОСТУП (логины/пароли)
+# =========================================================
+
+@app.route("/users", methods=["GET"])
+@login_required
+def users_page():
+    message, is_error = _pop_flash()
+    extra_users = auth.list_users()
+
+    cards = ""
+    for u in extra_users:
+        cards += f"""
+<div class="card">
+  <div class="row">
+    <span>{u}</span>
+    <form method="post" action="{url_for('users_remove')}" onsubmit="return confirm('Удалить доступ у {u}?')">
+      <input type="hidden" name="username" value="{u}">
+      <button class="danger small" type="submit">Удалить</button>
+    </form>
+  </div>
+</div>
+"""
+    if not extra_users:
+        cards = '<div class="empty">Дополнительных пользователей пока нет.</div>'
+
+    content = f"""
+<h2 class="section">Кто имеет доступ</h2>
+<p class="muted">Главный администратор задан в переменных окружения Railway и здесь не отображается — его нельзя удалить из панели.</p>
+{cards}
+
+<h2 class="section">Выдать новый доступ</h2>
+<div class="card">
+  <form method="post" action="{url_for('users_add')}" class="stack">
+    <input type="text" name="username" placeholder="Логин" required>
+    <input type="text" name="password" placeholder="Пароль" required>
+    <button type="submit">➕ Выдать доступ</button>
+  </form>
+</div>
+"""
+    return render_page("users_page", content, message, is_error)
+
 
 @app.route("/users/add", methods=["POST"])
 @login_required
@@ -493,8 +635,8 @@ def users_add():
     password = request.form.get("password", "")
     ok, error = auth.add_user(username, password)
     if ok:
-        return _flash_redirect(f"Логин «{username}» создан.")
-    return _flash_redirect(error, True)
+        return _flash_redirect("users_page", f"Логин «{username}» создан.")
+    return _flash_redirect("users_page", error, True)
 
 
 @app.route("/users/remove", methods=["POST"])
@@ -502,7 +644,7 @@ def users_add():
 def users_remove():
     username = request.form.get("username", "")
     auth.remove_user(username)
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("users_page"))
 
 
 def run_panel():
