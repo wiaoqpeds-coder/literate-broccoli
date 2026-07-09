@@ -2,25 +2,31 @@
 Юзербот: работает от имени вашего личного Telegram-аккаунта.
 
 Два режима работы (переключаются командой /mode):
-
   autocomment — пишет одну из включённых фраз в комментарии под постами,
                 автоматически пересланными из канала в группу обсуждений.
                 Интервал: раз в N постов (/interval).
-
   chat        — отвечает одной из включённых фраз на обычные сообщения
                 людей в группе. Интервал: раз в N сообщений (/chatinterval).
 
 Работает только в группах, которые вы явно подключили через /addgroup.
+
 Все команды пишутся ВАМИ, от своего аккаунта, в любом чате (например,
 в "Избранном"), и начинаются со слэша /. Полный список — команда /help.
 
+Одновременно поднимается веб-панель администратора (Flask) — см. web_panel.py.
+Доступ по адресу, который выдаст Railway, вход по логину/паролю
+(переменные окружения ADMIN_USERNAME / ADMIN_PASSWORD + логины, выданные
+через саму панель).
+
 Запуск: python userbot.py
 Требуются переменные окружения: API_ID, API_HASH, SESSION_STRING
+Опционально: ADMIN_USERNAME, ADMIN_PASSWORD (для веб-панели)
 """
 
 import asyncio
 import logging
 import os
+import threading
 
 from telethon import TelegramClient, events, utils
 from telethon.sessions import StringSession
@@ -30,6 +36,7 @@ import groups_store as store
 import dm_store as dms
 import phrases_store as phrases
 import settings_store as settings
+import web_panel
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -85,7 +92,8 @@ HELP_TEXT = (
     "/chatinterval <N> — задать его\n\n"
     "— Прочее —\n"
     "/status — текущее состояние\n"
-    "/help — показать этот список команд"
+    "/help — показать этот список команд\n\n"
+    "🌐 Все эти настройки также доступны в веб-панели в браузере."
 )
 
 
@@ -112,27 +120,25 @@ def is_automatic_channel_forward(message) -> bool:
 def phrases_status_text() -> str:
     data = phrases.list_phrases()
     enabled_weight_sum = sum(p.get("weight", 1) for p in data if p.get("enabled")) or 1
-
     lines = []
     for i, p in enumerate(data, start=1):
         mark = "✅" if p.get("enabled") else "⛔"
         weight = p.get("weight", 1)
         if p.get("enabled"):
             percent = weight / enabled_weight_sum * 100
-            lines.append(f"{mark} {i}. {p['text']}  (вес {weight}, ~{percent:.1f}%)")
+            lines.append(f"{mark} {i}. {p['text']} (вес {weight}, ~{percent:.1f}%)")
         else:
-            lines.append(f"{mark} {i}. {p['text']}  (выключена)")
+            lines.append(f"{mark} {i}. {p['text']} (выключена)")
     return "\n".join(lines)
 
 
 # =========================================================
-#                    РЕЖИМ И ВКЛ/ВЫКЛ
+#                 РЕЖИМ И ВКЛ/ВЫКЛ
 # =========================================================
 
 @client.on(events.NewMessage(outgoing=True, pattern=r'^/mode(?:\s+(\w+))?$'))
 async def cmd_mode(event):
     arg = event.pattern_match.group(1)
-
     if not arg:
         current = settings.get_mode()
         await event.edit(
@@ -216,7 +222,7 @@ async def cmd_mygroups(event):
 
 
 # =========================================================
-#                 ЛИЧНЫЕ ЧАТЫ (DM)
+#              ЛИЧНЫЕ ЧАТЫ (DM)
 # =========================================================
 
 @client.on(events.NewMessage(outgoing=True, pattern=r'^/adddm(?:\s+(.+))?$'))
@@ -227,7 +233,6 @@ async def cmd_adddm(event):
         return
 
     raw = arg.strip()
-
     try:
         if raw.lstrip('-').isdigit():
             entity = await client.get_entity(int(raw))
@@ -288,7 +293,6 @@ async def cmd_dmoff(event):
 @client.on(events.NewMessage(outgoing=True, pattern=r'^/dminterval(?:\s+(\d+))?$'))
 async def cmd_dminterval(event):
     arg = event.pattern_match.group(1)
-
     if not arg:
         current = settings.get_dm_interval()
         await event.edit(
@@ -305,7 +309,7 @@ async def cmd_dminterval(event):
 
 
 # =========================================================
-#              УПРАВЛЕНИЕ ФРАЗАМИ И ИХ ВЕСОМ
+#          УПРАВЛЕНИЕ ФРАЗАМИ И ИХ ВЕСОМ
 # =========================================================
 
 @client.on(events.NewMessage(outgoing=True, pattern=r'^/phrases$'))
@@ -365,13 +369,12 @@ async def cmd_setweight(event):
 
 
 # =========================================================
-#                       ИНТЕРВАЛЫ
+#                      ИНТЕРВАЛЫ
 # =========================================================
 
 @client.on(events.NewMessage(outgoing=True, pattern=r'^/interval(?:\s+(\d+))?$'))
 async def cmd_interval(event):
     arg = event.pattern_match.group(1)
-
     if not arg:
         current = settings.get_interval()
         await event.edit(
@@ -390,7 +393,6 @@ async def cmd_interval(event):
 @client.on(events.NewMessage(outgoing=True, pattern=r'^/chatinterval(?:\s+(\d+))?$'))
 async def cmd_chatinterval(event):
     arg = event.pattern_match.group(1)
-
     if not arg:
         current = settings.get_chat_interval()
         await event.edit(
@@ -438,7 +440,7 @@ async def cmd_help(event):
 
 
 # =========================================================
-#     РЕЖИМ 1: АВТОКОММЕНТИРОВАНИЕ ПОСТОВ КАНАЛА
+#      РЕЖИМ 1: АВТОКОММЕНТИРОВАНИЕ ПОСТОВ КАНАЛА
 # =========================================================
 
 @client.on(events.NewMessage())
@@ -467,7 +469,7 @@ async def auto_comment(event):
 
 
 # =========================================================
-#     РЕЖИМ 2: ОТВЕТЫ НА ОБЫЧНЫЕ СООБЩЕНИЯ ЛЮДЕЙ В ГРУППЕ
+#    РЕЖИМ 2: ОТВЕТЫ НА ОБЫЧНЫЕ СООБЩЕНИЯ ЛЮДЕЙ В ГРУППЕ
 # =========================================================
 
 @client.on(events.NewMessage(incoming=True))
@@ -481,14 +483,10 @@ async def chat_reply(event):
 
     message = event.message
 
-    # не реагируем на пересланные посты канала — это задача режима autocomment
     if is_automatic_channel_forward(message):
         return
-
-    # игнорируем сервисные сообщения и сообщения без текста
     if not (message.text or message.raw_text):
         return
-
     if not settings.bump_and_should_reply_chat(event.chat_id):
         return
 
@@ -505,7 +503,7 @@ async def chat_reply(event):
 
 
 # =========================================================
-#              РЕЖИМ 3: АВТООТВЕТЫ В ЛИЧНЫХ ЧАТАХ
+#          РЕЖИМ 3: АВТООТВЕТЫ В ЛИЧНЫХ ЧАТАХ
 # =========================================================
 
 @client.on(events.NewMessage(incoming=True))
@@ -520,7 +518,6 @@ async def dm_reply(event):
     message = event.message
     if not (message.text or message.raw_text):
         return
-
     if not settings.bump_and_should_reply_dm(event.chat_id):
         return
 
@@ -543,6 +540,16 @@ async def main():
     logger.info(f"Режим: {settings.get_mode()}, включён: {settings.is_enabled()}")
     logger.info(f"Интервал autocomment: {settings.get_interval()}, chat: {settings.get_chat_interval()}")
     logger.info(f"Личные чаты включены: {settings.is_dm_enabled()}, интервал: {settings.get_dm_interval()}")
+
+    # Передаём клиента и текущий event loop веб-панели, чтобы она могла
+    # безопасно дёргать Telethon (добавление групп/чатов) из другого потока.
+    loop = asyncio.get_running_loop()
+    web_panel.set_client(client, loop)
+
+    panel_thread = threading.Thread(target=web_panel.run_panel, daemon=True)
+    panel_thread.start()
+    logger.info("Веб-панель запущена в фоновом потоке.")
+
     logger.info("Ожидаю новые сообщения в подключённых группах и личных чатах...")
     await client.run_until_disconnected()
 

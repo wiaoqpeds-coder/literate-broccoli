@@ -39,6 +39,17 @@ def remove_group_by_username(username: str) -> bool:
     return True
 
 
+def remove_group_by_chat_id(chat_id) -> bool:
+    """Отключает группу по chat_id (используется веб-панелью)."""
+    data = _load()
+    key = str(chat_id)
+    if key not in data:
+        return False
+    del data[key]
+    _save(data)
+    return True
+
+
 def is_allowed(chat_id: int) -> bool:
     data = _load()
     return str(chat_id) in data

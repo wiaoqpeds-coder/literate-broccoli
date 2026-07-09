@@ -38,6 +38,17 @@ def remove_dm_by_label(label: str) -> bool:
     return False
 
 
+def remove_dm_by_chat_id(chat_id) -> bool:
+    """Отключает личный чат по chat_id (используется веб-панелью)."""
+    data = _load()
+    key = str(chat_id)
+    if key not in data:
+        return False
+    del data[key]
+    _save(data)
+    return True
+
+
 def is_allowed(chat_id: int) -> bool:
     """Проверяет, подключён ли личный чат с данным chat_id."""
     return str(chat_id) in _load()

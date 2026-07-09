@@ -16,6 +16,7 @@
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
+
 def main():
     print("=== Генерация сессии для юзербота ===\n")
     api_id = int(input("Введите api_id (с my.telegram.org): ").strip())
