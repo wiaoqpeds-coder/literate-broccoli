@@ -18,6 +18,7 @@ from functools import wraps
 
 from flask import Flask, request, redirect, url_for, session, render_template_string
 from telethon.tl.types import Channel, User
+from telethon import utils
 
 import groups_store as groups
 import dm_store as dms
@@ -330,8 +331,21 @@ async def _add_group_coro(username):
     entity = await _client.get_entity(username)
     if not isinstance(entity, Channel) or not entity.megagroup:
         raise ValueError("Это не группа обсуждений (супергруппа).")
-    from telethon import utils
     groups.add_group(utils.get_peer_id(entity), username)
+
+
+async def _discover_groups_coro():
+    """Возвращает список групп (супергрупп), в которых состоит аккаунт."""
+    results = []
+    async for dialog in _client.iter_dialogs(limit=300):
+        entity = dialog.entity
+        if isinstance(entity, Channel) and entity.megagroup:
+            results.append({
+                "id": utils.get_peer_id(entity),
+                "username": entity.username,
+                "title": dialog.name,
+            })
+    return results
 
 
 @app.route("/groups", methods=["GET"])
@@ -356,11 +370,62 @@ def groups_page():
     if not data:
         cards = '<div class="empty">Групп пока не подключено.</div>'
 
+    discover_html = ""
+    if request.args.get("discover") == "1":
+        try:
+            found = run_async(_discover_groups_coro())
+        except Exception as e:
+            found = []
+            discover_html += f'<div class="msg err">Не удалось получить список: {e}</div>'
+
+        connected_ids = set(data.keys())
+        rows = ""
+        for g in found:
+            already = str(g["id"]) in connected_ids
+            if g["username"]:
+                label = f"@{g['username']}"
+            else:
+                label = f"{g['title']} (нет юзернейма)"
+            btn = (
+                '<span class="pill on">Уже подключена</span>' if already else
+                (f"""
+                <form method="post" action="{url_for('groups_quickadd')}">
+                  <input type="hidden" name="chat_id" value="{g['id']}">
+                  <input type="hidden" name="label" value="{g['username'] or g['title']}">
+                  <button type="submit" class="small">Подключить</button>
+                </form>
+                """ if g["username"] else '<span class="muted">нет юзернейма — подключить нельзя</span>')
+            )
+            rows += f"""
+<div class="card">
+  <div class="row">
+    <span>{label}</span>
+    {btn}
+  </div>
+</div>
+"""
+        if not rows:
+            rows = '<div class="empty">Групп (супергрупп с обсуждениями) не найдено среди ваших чатов.</div>'
+
+        discover_html += f"""
+<h2 class="section">Найдено в Telegram ({len(found)})</h2>
+{rows}
+"""
+    else:
+        discover_html = f"""
+<div class="card">
+  <a href="{url_for('groups_page')}?discover=1"><button type="button" onclick="window.location='{url_for('groups_page')}?discover=1'">🔍 Показать мои группы из Telegram</button></a>
+</div>
+"""
+
     content = f"""
 <h2 class="section">Подключённые группы ({len(data)})</h2>
 {cards}
 
-<h2 class="section">Подключить новую</h2>
+<h2 class="section">Автообнаружение</h2>
+{discover_html}
+
+<h2 class="section">Подключить вручную</h2>
 <div class="card">
   <form method="post" action="{url_for('groups_add')}" class="stack">
     <input type="text" name="username" placeholder="@username_группы" required>
@@ -370,6 +435,18 @@ def groups_page():
 </div>
 """
     return render_page("groups_page", content, message, is_error)
+
+
+@app.route("/groups/quickadd", methods=["POST"])
+@login_required
+def groups_quickadd():
+    chat_id = request.form.get("chat_id")
+    label = request.form.get("label", "").strip()
+    try:
+        groups.add_group(int(chat_id), normalize_username(label))
+        return _flash_redirect("groups_page", f"Группа «{label}» подключена.")
+    except Exception as e:
+        return _flash_redirect("groups_page", f"Не удалось подключить: {e}", True)
 
 
 @app.route("/groups/add", methods=["POST"])
@@ -404,10 +481,23 @@ async def _add_dm_coro(raw):
         entity = await _client.get_entity(normalize_username(raw))
     if not isinstance(entity, User):
         raise ValueError("Это не личный пользователь.")
-    from telethon import utils
     label = entity.username or entity.first_name or str(entity.id)
     dms.add_dm(utils.get_peer_id(entity), label)
     return label
+
+
+async def _discover_dms_coro():
+    """Возвращает список личных диалогов (людей), с которыми есть переписка."""
+    results = []
+    async for dialog in _client.iter_dialogs(limit=300):
+        entity = dialog.entity
+        if isinstance(entity, User) and not entity.bot and not entity.is_self:
+            results.append({
+                "id": utils.get_peer_id(entity),
+                "username": entity.username,
+                "name": dialog.name,
+            })
+    return results
 
 
 @app.route("/dms", methods=["GET"])
@@ -434,6 +524,50 @@ def dms_page():
     if not data:
         cards = '<div class="empty">Личных чатов пока не подключено.</div>'
 
+    discover_html = ""
+    if request.args.get("discover") == "1":
+        try:
+            found = run_async(_discover_dms_coro())
+        except Exception as e:
+            found = []
+            discover_html += f'<div class="msg err">Не удалось получить список: {e}</div>'
+
+        connected_ids = set(data.keys())
+        rows = ""
+        for u in found:
+            already = str(u["id"]) in connected_ids
+            label = u["name"] or (f"@{u['username']}" if u["username"] else str(u["id"]))
+            btn = (
+                '<span class="pill on">Уже подключён</span>' if already else f"""
+                <form method="post" action="{url_for('dm_quickadd')}">
+                  <input type="hidden" name="chat_id" value="{u['id']}">
+                  <input type="hidden" name="label" value="{label}">
+                  <button type="submit" class="small">Подключить</button>
+                </form>
+                """
+            )
+            rows += f"""
+<div class="card">
+  <div class="row">
+    <span>{label}</span>
+    {btn}
+  </div>
+</div>
+"""
+        if not rows:
+            rows = '<div class="empty">Личных переписок не найдено.</div>'
+
+        discover_html += f"""
+<h2 class="section">Найдено в Telegram ({len(found)})</h2>
+{rows}
+"""
+    else:
+        discover_html = f"""
+<div class="card">
+  <button type="button" onclick="window.location='{url_for('dms_page')}?discover=1'">🔍 Показать мои переписки из Telegram</button>
+</div>
+"""
+
     content = f"""
 <h2 class="section">Авто-ответчик</h2>
 <div class="card">
@@ -455,7 +589,10 @@ def dms_page():
 <h2 class="section">Подключённые чаты ({len(data)})</h2>
 {cards}
 
-<h2 class="section">Подключить новый</h2>
+<h2 class="section">Автообнаружение</h2>
+{discover_html}
+
+<h2 class="section">Подключить вручную</h2>
 <div class="card">
   <form method="post" action="{url_for('dm_add')}" class="stack">
     <input type="text" name="target" placeholder="@username или ID пользователя" required>
@@ -464,6 +601,18 @@ def dms_page():
 </div>
 """
     return render_page("dms_page", content, message, is_error)
+
+
+@app.route("/dm/quickadd", methods=["POST"])
+@login_required
+def dm_quickadd():
+    chat_id = request.form.get("chat_id")
+    label = request.form.get("label", "").strip()
+    try:
+        dms.add_dm(int(chat_id), label)
+        return _flash_redirect("dms_page", f"Личный чат «{label}» подключён.")
+    except Exception as e:
+        return _flash_redirect("dms_page", f"Не удалось подключить: {e}", True)
 
 
 @app.route("/dm/add", methods=["POST"])
@@ -514,6 +663,20 @@ def phrases_page():
     message, is_error = _pop_flash()
     data = phrases.list_phrases()
 
+    # Если сумма весов не равна 100 (например, старые данные весом "1" у каждой) —
+    # один раз пропорционально приводим к сумме 100, сохраняя те же соотношения.
+    total_raw = sum(p.get("weight", 1) for p in data)
+    if total_raw > 0 and total_raw != 100:
+        running = 0
+        for i, p in enumerate(data, start=1):
+            if i < len(data):
+                new_weight = round(p.get("weight", 1) / total_raw * 100)
+                running += new_weight
+            else:
+                new_weight = 100 - running  # последней достаётся остаток, чтобы сумма была ровно 100
+            phrases.set_weight(i, max(0, new_weight))
+        data = phrases.list_phrases()
+
     total_weight = sum(p.get("weight", 1) for p in data if p.get("enabled")) or 1
 
     cards = ""
@@ -536,7 +699,7 @@ def phrases_page():
       <button type="submit" class="small {'ghost' if enabled else ''}">{'✅ Включена' if enabled else '⛔ Выключена'}</button>
     </form>
     <form method="post" action="{url_for('phrases_setweight')}" class="inline">
-      <input type="number" name="weight" value="{weight}" min="0" style="width:60px">
+      <input type="number" name="weight" value="{weight}" min="0" max="100" style="width:60px">
       <span class="muted">%</span>
       <button type="submit" class="small">Сохранить</button>
     </form>
@@ -546,9 +709,10 @@ def phrases_page():
 </div>
 """
 
+    grand_total = sum(p.get("weight", 1) for p in data)
     content = f"""
 <h2 class="section">Фразы для авто-ответов ({len(data)})</h2>
-<p class="muted">Число «%» — это относительный шанс, что бот выберет именно эту фразу среди включённых. Не обязательно, чтобы сумма была ровно 100 — соотношение чисел друг с другом важнее абсолютных значений.</p>
+<p class="muted">Проценты всех фраз в сумме дают 100%. Сейчас указано: <b>{grand_total}%</b>. Чтобы увеличить одну фразу — сначала уменьшите другую, иначе сумма превысит 100%, и сохранить не получится.</p>
 {cards}
 """
     return render_page("phrases_page", content, message, is_error)
@@ -581,6 +745,20 @@ def phrases_setweight():
         weight = int(request.form.get("weight", 1))
     except ValueError:
         weight = 1
+    weight = max(0, min(100, weight))
+
+    data = phrases.list_phrases()
+    others_total = sum(p.get("weight", 1) for j, p in enumerate(data, start=1) if j != index)
+
+    if others_total + weight > 100:
+        max_allowed = max(0, 100 - others_total)
+        return _flash_redirect(
+            "phrases_page",
+            f"Сумма процентов по всем фразам не может превышать 100%. "
+            f"У остальных фраз сейчас: {others_total}%. Максимум для этой фразы: {max_allowed}%.",
+            True,
+        )
+
     phrases.set_weight(index, weight)
     return redirect(url_for("phrases_page"))
 
