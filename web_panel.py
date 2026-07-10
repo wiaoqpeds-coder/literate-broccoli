@@ -699,6 +699,7 @@ def phrases_page():
       <button type="submit" class="small {'ghost' if enabled else ''}">{'✅ Включена' if enabled else '⛔ Выключена'}</button>
     </form>
     <form method="post" action="{url_for('phrases_setweight')}" class="inline">
+      <input type="hidden" name="index" value="{i}">
       <input type="number" name="weight" value="{weight}" min="0" max="100" style="width:60px">
       <span class="muted">%</span>
       <button type="submit" class="small">Сохранить</button>
@@ -721,7 +722,10 @@ def phrases_page():
 @app.route("/phrases/settext", methods=["POST"])
 @login_required
 def phrases_settext():
-    index = int(request.form.get("index"))
+    try:
+        index = int(request.form.get("index", ""))
+    except (TypeError, ValueError):
+        return _flash_redirect("phrases_page", "Не удалось определить номер фразы.", True)
     text = request.form.get("text", "").strip()
     if text:
         phrases.set_phrase(index, text)
@@ -731,7 +735,10 @@ def phrases_settext():
 @app.route("/phrases/toggle", methods=["POST"])
 @login_required
 def phrases_toggle():
-    index = int(request.form.get("index"))
+    try:
+        index = int(request.form.get("index", ""))
+    except (TypeError, ValueError):
+        return _flash_redirect("phrases_page", "Не удалось определить номер фразы.", True)
     enabled = request.form.get("enabled") == "true"
     phrases.set_enabled(index, enabled)
     return redirect(url_for("phrases_page"))
@@ -740,14 +747,21 @@ def phrases_toggle():
 @app.route("/phrases/setweight", methods=["POST"])
 @login_required
 def phrases_setweight():
-    index = int(request.form.get("index"))
+    try:
+        index = int(request.form.get("index", ""))
+    except (TypeError, ValueError):
+        return _flash_redirect("phrases_page", "Не удалось определить номер фразы.", True)
+
     try:
         weight = int(request.form.get("weight", 1))
-    except ValueError:
+    except (TypeError, ValueError):
         weight = 1
     weight = max(0, min(100, weight))
 
     data = phrases.list_phrases()
+    if index < 1 or index > len(data):
+        return _flash_redirect("phrases_page", f"Нет фразы №{index}.", True)
+
     others_total = sum(p.get("weight", 1) for j, p in enumerate(data, start=1) if j != index)
 
     if others_total + weight > 100:
