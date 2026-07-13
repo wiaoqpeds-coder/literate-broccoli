@@ -69,7 +69,8 @@ HELP_TEXT = (
     "/autoon — включить работу бота (в текущем режиме)\n"
     "/autooff — выключить работу бота полностью\n\n"
     "— Группы —\n"
-    "/addgroup @username — подключить группу\n"
+    "/addgroup @username или ID — подключить группу (в т.ч. приватную)\n"
+    "/discovergroups — список всех групп, где я состою\n"
     "/removegroup @username — отключить группу\n"
     "/mygroups — список подключённых групп\n\n"
     "— Личные чаты —\n"
@@ -175,23 +176,66 @@ async def cmd_autooff(event):
 async def cmd_addgroup(event):
     arg = event.pattern_match.group(1)
     if not arg:
-        await event.edit("Использование: /addgroup @username_группы")
+        await event.edit(
+            "Использование:\n"
+            "/addgroup @username_группы — для публичной группы\n"
+            "/addgroup -1001234567890 — по ID (для приватной группы без юзернейма)\n\n"
+            "Не знаете ID приватной группы? Используйте /discovergroups — покажет список "
+            "всех групп, где я состою, включая приватные."
+        )
         return
 
-    username = normalize_username(arg)
+    raw = arg.strip()
 
     try:
-        entity = await client.get_entity(username)
+        if raw.lstrip('-').isdigit():
+            entity = await client.get_entity(int(raw))
+        else:
+            entity = await client.get_entity(normalize_username(raw))
     except Exception:
-        await event.edit(f"❌ Не удалось найти группу @{username}. Проверьте юзернейм.")
+        await event.edit(
+            f"❌ Не удалось найти группу «{raw}». Проверьте юзернейм/ID, "
+            f"либо используйте /discovergroups, чтобы выбрать группу из списка."
+        )
         return
 
     if not isinstance(entity, Channel) or not entity.megagroup:
-        await event.edit(f"❌ @{username} — это не группа обсуждений (супергруппа).")
+        await event.edit(f"❌ «{raw}» — это не группа обсуждений (супергруппа).")
         return
 
-    store.add_group(utils.get_peer_id(entity), username)
-    await event.edit(f"✅ Группа @{username} подключена.")
+    label = entity.username or entity.title or str(utils.get_peer_id(entity))
+    store.add_group(utils.get_peer_id(entity), label)
+    await event.edit(f"✅ Группа «{label}» подключена.")
+
+
+@client.on(events.NewMessage(outgoing=True, pattern=r'^/discovergroups$'))
+async def cmd_discovergroups(event):
+    await event.edit("🔍 Ищу группы, где я состою...")
+    results = []
+    async for dialog in client.iter_dialogs(limit=300):
+        entity = dialog.entity
+        if isinstance(entity, Channel) and entity.megagroup:
+            results.append((utils.get_peer_id(entity), entity.username, dialog.name))
+
+    if not results:
+        await event.edit("Групп (супергрупп) не найдено среди ваших чатов.")
+        return
+
+    connected = store.list_groups()
+    lines = []
+    for chat_id, username, title in results:
+        mark = "✅" if str(chat_id) in connected else "➕"
+        if username:
+            lines.append(f"{mark} @{username} — {title}")
+        else:
+            lines.append(f"{mark} ID {chat_id} — {title} (приватная)")
+
+    text = (
+        "📋 Ваши группы (✅ уже подключена, ➕ ещё нет):\n\n" + "\n".join(lines) +
+        "\n\nЧтобы подключить приватную группу, скопируйте её ID и используйте:\n"
+        "/addgroup <ID>"
+    )
+    await event.edit(text)
 
 
 @client.on(events.NewMessage(outgoing=True, pattern=r'^/removegroup(?:\s+(.+))?$'))

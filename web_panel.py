@@ -385,16 +385,15 @@ def groups_page():
             if g["username"]:
                 label = f"@{g['username']}"
             else:
-                label = f"{g['title']} (нет юзернейма)"
+                label = f"{g['title']} (приватная группа)"
             btn = (
-                '<span class="pill on">Уже подключена</span>' if already else
-                (f"""
+                '<span class="pill on">Уже подключена</span>' if already else f"""
                 <form method="post" action="{url_for('groups_quickadd')}">
                   <input type="hidden" name="chat_id" value="{g['id']}">
-                  <input type="hidden" name="label" value="{g['username'] or g['title']}">
+                  <input type="hidden" name="label" value="{(g['username'] or g['title'] or str(g['id']))}">
                   <button type="submit" class="small">Подключить</button>
                 </form>
-                """ if g["username"] else '<span class="muted">нет юзернейма — подключить нельзя</span>')
+                """
             )
             rows += f"""
 <div class="card">
@@ -665,17 +664,22 @@ def phrases_page():
 
     # Если сумма весов не равна 100 (например, старые данные весом "1" у каждой) —
     # один раз пропорционально приводим к сумме 100, сохраняя те же соотношения.
-    total_raw = sum(p.get("weight", 1) for p in data)
-    if total_raw > 0 and total_raw != 100:
-        running = 0
-        for i, p in enumerate(data, start=1):
-            if i < len(data):
-                new_weight = round(p.get("weight", 1) / total_raw * 100)
-                running += new_weight
-            else:
-                new_weight = 100 - running  # последней достаётся остаток, чтобы сумма была ровно 100
-            phrases.set_weight(i, max(0, new_weight))
-        data = phrases.list_phrases()
+    # Обёрнуто в try/except: если с данными что-то не так, просто пропускаем
+    # выравнивание вместо падения всей страницы.
+    try:
+        total_raw = sum(p.get("weight", 1) for p in data)
+        if total_raw > 0 and total_raw != 100 and len(data) > 0:
+            running = 0
+            for i, p in enumerate(data, start=1):
+                if i < len(data):
+                    new_weight = round(p.get("weight", 1) / total_raw * 100)
+                    running += new_weight
+                else:
+                    new_weight = 100 - running  # последней достаётся остаток
+                phrases.set_weight(i, max(0, new_weight))
+            data = phrases.list_phrases()
+    except Exception:
+        app.logger.exception("Не удалось выровнять проценты фраз — показываю как есть.")
 
     total_weight = sum(p.get("weight", 1) for p in data if p.get("enabled")) or 1
 
@@ -699,7 +703,6 @@ def phrases_page():
       <button type="submit" class="small {'ghost' if enabled else ''}">{'✅ Включена' if enabled else '⛔ Выключена'}</button>
     </form>
     <form method="post" action="{url_for('phrases_setweight')}" class="inline">
-      <input type="hidden" name="index" value="{i}">
       <input type="number" name="weight" value="{weight}" min="0" max="100" style="width:60px">
       <span class="muted">%</span>
       <button type="submit" class="small">Сохранить</button>
@@ -722,10 +725,7 @@ def phrases_page():
 @app.route("/phrases/settext", methods=["POST"])
 @login_required
 def phrases_settext():
-    try:
-        index = int(request.form.get("index", ""))
-    except (TypeError, ValueError):
-        return _flash_redirect("phrases_page", "Не удалось определить номер фразы.", True)
+    index = int(request.form.get("index"))
     text = request.form.get("text", "").strip()
     if text:
         phrases.set_phrase(index, text)
@@ -735,10 +735,7 @@ def phrases_settext():
 @app.route("/phrases/toggle", methods=["POST"])
 @login_required
 def phrases_toggle():
-    try:
-        index = int(request.form.get("index", ""))
-    except (TypeError, ValueError):
-        return _flash_redirect("phrases_page", "Не удалось определить номер фразы.", True)
+    index = int(request.form.get("index"))
     enabled = request.form.get("enabled") == "true"
     phrases.set_enabled(index, enabled)
     return redirect(url_for("phrases_page"))
@@ -748,33 +745,30 @@ def phrases_toggle():
 @login_required
 def phrases_setweight():
     try:
-        index = int(request.form.get("index", ""))
-    except (TypeError, ValueError):
-        return _flash_redirect("phrases_page", "Не удалось определить номер фразы.", True)
+        index = int(request.form.get("index"))
+        try:
+            weight = int(request.form.get("weight", 1))
+        except ValueError:
+            weight = 1
+        weight = max(0, min(100, weight))
 
-    try:
-        weight = int(request.form.get("weight", 1))
-    except (TypeError, ValueError):
-        weight = 1
-    weight = max(0, min(100, weight))
+        data = phrases.list_phrases()
+        others_total = sum(p.get("weight", 1) for j, p in enumerate(data, start=1) if j != index)
 
-    data = phrases.list_phrases()
-    if index < 1 or index > len(data):
-        return _flash_redirect("phrases_page", f"Нет фразы №{index}.", True)
+        if others_total + weight > 100:
+            max_allowed = max(0, 100 - others_total)
+            return _flash_redirect(
+                "phrases_page",
+                f"Сумма процентов по всем фразам не может превышать 100%. "
+                f"У остальных фраз сейчас: {others_total}%. Максимум для этой фразы: {max_allowed}%.",
+                True,
+            )
 
-    others_total = sum(p.get("weight", 1) for j, p in enumerate(data, start=1) if j != index)
-
-    if others_total + weight > 100:
-        max_allowed = max(0, 100 - others_total)
-        return _flash_redirect(
-            "phrases_page",
-            f"Сумма процентов по всем фразам не может превышать 100%. "
-            f"У остальных фраз сейчас: {others_total}%. Максимум для этой фразы: {max_allowed}%.",
-            True,
-        )
-
-    phrases.set_weight(index, weight)
-    return redirect(url_for("phrases_page"))
+        phrases.set_weight(index, weight)
+        return redirect(url_for("phrases_page"))
+    except Exception:
+        app.logger.exception("Ошибка при сохранении процента фразы")
+        return _flash_redirect("phrases_page", "Не удалось сохранить процент — попробуйте ещё раз.", True)
 
 
 # =========================================================
@@ -837,6 +831,18 @@ def users_remove():
     username = request.form.get("username", "")
     auth.remove_user(username)
     return redirect(url_for("users_page"))
+
+
+@app.errorhandler(500)
+def handle_500(e):
+    app.logger.exception("Необработанная ошибка на странице панели")
+    return (
+        "<h2>⚠️ Что-то пошло не так</h2>"
+        "<p>Произошла внутренняя ошибка. Подробности записаны в логи Railway "
+        "(Deployments → последний деплой → прокрутить вниз).</p>"
+        f'<p><a href="{url_for("dashboard")}">← Вернуться на главную</a></p>',
+        500,
+    )
 
 
 def run_panel():
