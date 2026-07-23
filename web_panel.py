@@ -703,9 +703,14 @@ def phrases_page():
       <button type="submit" class="small {'ghost' if enabled else ''}">{'✅ Включена' if enabled else '⛔ Выключена'}</button>
     </form>
     <form method="post" action="{url_for('phrases_setweight')}" class="inline">
+      <input type="hidden" name="index" value="{i}">
       <input type="number" name="weight" value="{weight}" min="0" max="100" style="width:60px">
       <span class="muted">%</span>
       <button type="submit" class="small">Сохранить</button>
+    </form>
+    <form method="post" action="{url_for('phrases_remove')}" onsubmit="return confirm('Удалить эту фразу?')">
+      <input type="hidden" name="index" value="{i}">
+      <button type="submit" class="small danger">🗑 Удалить</button>
     </form>
   </div>
   <div class="bar-outer"><div class="bar-inner" style="width:{percent:.1f}%"></div></div>
@@ -718,14 +723,47 @@ def phrases_page():
 <h2 class="section">Фразы для авто-ответов ({len(data)})</h2>
 <p class="muted">Проценты всех фраз в сумме дают 100%. Сейчас указано: <b>{grand_total}%</b>. Чтобы увеличить одну фразу — сначала уменьшите другую, иначе сумма превысит 100%, и сохранить не получится.</p>
 {cards}
+<div class="card">
+  <form method="post" action="{url_for('phrases_add')}" class="row">
+    <input type="text" name="text" placeholder="Текст новой фразы" style="flex:1" required>
+    <button type="submit" class="small">➕ Добавить фразу</button>
+  </form>
+  <div class="muted" style="margin-top:6px">Новая фраза добавляется выключенной с весом 0% — включите её и задайте процент после добавления.</div>
+</div>
 """
     return render_page("phrases_page", content, message, is_error)
+
+
+@app.route("/phrases/add", methods=["POST"])
+@login_required
+def phrases_add():
+    text = request.form.get("text", "").strip()
+    if not text:
+        return _flash_redirect("phrases_page", "Введите текст фразы.", True)
+    phrases.add_phrase(text, weight=0, enabled=False)
+    return _flash_redirect("phrases_page", f"Фраза «{text}» добавлена (пока выключена, вес 0%).", False)
+
+
+@app.route("/phrases/remove", methods=["POST"])
+@login_required
+def phrases_remove():
+    try:
+        index = int(request.form.get("index", ""))
+    except (TypeError, ValueError):
+        return _flash_redirect("phrases_page", "Не удалось определить номер фразы.", True)
+
+    if phrases.remove_phrase(index):
+        return _flash_redirect("phrases_page", "Фраза удалена.", False)
+    return _flash_redirect("phrases_page", "Не удалось удалить фразу (номер неверный или она последняя).", True)
 
 
 @app.route("/phrases/settext", methods=["POST"])
 @login_required
 def phrases_settext():
-    index = int(request.form.get("index"))
+    try:
+        index = int(request.form.get("index", ""))
+    except (TypeError, ValueError):
+        return _flash_redirect("phrases_page", "Не удалось определить номер фразы.", True)
     text = request.form.get("text", "").strip()
     if text:
         phrases.set_phrase(index, text)
@@ -735,7 +773,10 @@ def phrases_settext():
 @app.route("/phrases/toggle", methods=["POST"])
 @login_required
 def phrases_toggle():
-    index = int(request.form.get("index"))
+    try:
+        index = int(request.form.get("index", ""))
+    except (TypeError, ValueError):
+        return _flash_redirect("phrases_page", "Не удалось определить номер фразы.", True)
     enabled = request.form.get("enabled") == "true"
     phrases.set_enabled(index, enabled)
     return redirect(url_for("phrases_page"))

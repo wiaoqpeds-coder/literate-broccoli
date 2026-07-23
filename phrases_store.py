@@ -4,29 +4,52 @@ import random
 
 PHRASES_FILE = "phrases.json"
 
-# Фразы по умолчанию (можно менять текст и вес через команды/панель)
+# Фразы по умолчанию — используются при первом запуске (если phrases.json ещё нет),
+# либо чтобы "доукомплектовать" уже существующий файл с меньшим числом фраз до 10.
+# При доукомплектовании ВСЕ фразы (старые и новые) выравниваются на 10% каждая
+# и включаются — то есть после обновления сразу равная вероятность у всех 10.
 DEFAULT_PHRASES = [
-    {"text": "1", "enabled": True, "weight": 1},
-    {"text": "🔥", "enabled": True, "weight": 1},
-    {"text": "👍", "enabled": True, "weight": 1},
-    {"text": "😁", "enabled": True, "weight": 1},
-    {"text": "+", "enabled": True, "weight": 1},
+    {"text": "1", "enabled": True, "weight": 10},
+    {"text": "🔥", "enabled": True, "weight": 10},
+    {"text": "👍", "enabled": True, "weight": 10},
+    {"text": "😁", "enabled": True, "weight": 10},
+    {"text": "+", "enabled": True, "weight": 10},
+    {"text": "😂", "enabled": True, "weight": 10},
+    {"text": "🎉", "enabled": True, "weight": 10},
+    {"text": "❤️", "enabled": True, "weight": 10},
+    {"text": "👏", "enabled": True, "weight": 10},
+    {"text": "🙌", "enabled": True, "weight": 10},
 ]
 
 
 def _load() -> list:
     if not os.path.exists(PHRASES_FILE):
-        return [dict(p) for p in DEFAULT_PHRASES]
+        data = [dict(p) for p in DEFAULT_PHRASES]
+        _save(data)
+        return data
+
     try:
         with open(PHRASES_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             if not data:
-                return [dict(p) for p in DEFAULT_PHRASES]
+                data = [dict(p) for p in DEFAULT_PHRASES]
     except (json.JSONDecodeError, FileNotFoundError):
-        return [dict(p) for p in DEFAULT_PHRASES]
+        data = [dict(p) for p in DEFAULT_PHRASES]
 
     for p in data:
         p.setdefault("weight", 1)
+        p.setdefault("enabled", True)
+
+    # Доукомплектовываем существующий файл до 10 фраз. Как и просили — все 10
+    # (и старые, и новые) становятся равными: по 10% и включены.
+    if len(data) < len(DEFAULT_PHRASES):
+        for extra in DEFAULT_PHRASES[len(data):]:
+            data.append({"text": extra["text"], "enabled": True, "weight": 10})
+        for p in data:
+            p["weight"] = 10
+            p["enabled"] = True
+        _save(data)
+
     return data
 
 
@@ -38,6 +61,26 @@ def _save(data: list):
 def list_phrases() -> list:
     """Возвращает список всех фраз: [{"text":..., "enabled":..., "weight":...}, ...]"""
     return _load()
+
+
+def add_phrase(text: str, weight: int = 0, enabled: bool = True) -> int:
+    """Добавляет новую фразу в конец списка. Возвращает её номер (с 1)."""
+    data = _load()
+    data.append({"text": text, "enabled": enabled, "weight": max(0, weight)})
+    _save(data)
+    return len(data)
+
+
+def remove_phrase(index: int) -> bool:
+    """Удаляет фразу по номеру. Нельзя удалить последнюю оставшуюся фразу."""
+    data = _load()
+    if index < 1 or index > len(data):
+        return False
+    if len(data) <= 1:
+        return False
+    data.pop(index - 1)
+    _save(data)
+    return True
 
 
 def set_phrase(index: int, text: str) -> bool:
